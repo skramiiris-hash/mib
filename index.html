@@ -31,15 +31,11 @@
     font-weight: 700; color: #fff; background: var(--rec); display: none; }
   .recbadge.on { display: block; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: .55; } }
-  .check { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; background: var(--card);
-    border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 12.5px; color: var(--muted); }
-  .ci { display: flex; align-items: center; gap: 7px; min-width: 0; }
-  .ci::before { content: '○'; width: 14px; text-align: center; color: #555; flex: none; }
-  .ci.ok { color: var(--text); } .ci.ok::before { content: '✓'; color: var(--live); font-weight: 700; }
-  .ci.bad::before { content: '!'; color: var(--away); font-weight: 700; }
-  .now { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
-    display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: var(--muted); }
-  .now b { color: var(--text); font-weight: 600; }
+  .loopage { display: flex; align-items: center; gap: 9px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 14px; font-size: 14px; }
+  .loopage::before { content: ''; width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--rec); }
+  .loopage.fresh { color: var(--text); } .loopage.fresh::before { background: var(--live); }
+  .loopage.old { color: #ff8a8d; border-color: rgba(229,72,77,.45); }
   button.big { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
     border-radius: 14px; padding: 18px 16px; font-size: 18px; font-weight: 600; text-align: left; cursor: pointer;
     display: flex; align-items: center; gap: 14px; transition: background .15s, border-color .15s, opacity .15s; }
@@ -80,23 +76,16 @@
     <span class="recbadge" id="recbadge">● REC</span>
   </div>
 
-  <div class="now"><span>Camera showing</span><b id="scene">—</b></div>
-
-  <div class="check" title="Pre-class check">
-    <div class="ci" id="ck-obs">OBS connected</div>
-    <div class="ci" id="ck-cam">Virtual camera on</div>
-    <div class="ci" id="ck-setup">Scenes ready</div>
-    <div class="ci" id="ck-loop">Loop recorded today</div>
-  </div>
+  <div class="loopage" id="loopage">No away video yet</div>
 
   <button class="big" id="rec" disabled>
     <span class="icon"><i></i></span>
-    <span><span id="recLabel">Record loop</span><small id="recSub">Sit still for 1–2 minutes</small></span>
+    <span><span id="recLabel">Record away video</span><small id="recSub">Sit still for 1–2 minutes, then press again</small></span>
   </button>
 
   <button class="big" id="away" disabled>
     <span class="icon">⏸</span>
-    <span>Away<small id="awaySub">Play the loop · then mute Webex ⌘⇧M</small></span>
+    <span>Away<small id="awaySub">Show the away video · then mute Webex ⌘⇧M</small></span>
   </button>
 
   <button class="big" id="live" disabled>
@@ -105,7 +94,7 @@
   </button>
 
   <div class="msg" id="msg"></div>
-  <div class="hint">Keep OBS open in the background. Webex camera = “OBS Virtual Camera”.</div>
+  <div class="hint">In Webex, the camera should be “OBS Virtual Camera”.</div>
 
   <details>
     <summary>Settings</summary>
@@ -197,7 +186,7 @@ function connect() {
     if (m.op === 0) { // Hello
       const d = { rpcVersion: 1, eventSubscriptions: 4 | 64 }; // Scenes + Outputs
       if (m.d.authentication) {
-        if (!cfg.pw) { setConn('Needs password', 'bad'); say('Open Settings below and paste the OBS WebSocket password.'); return; }
+        if (!cfg.pw) { setConn('Needs password', 'bad'); say('Open MIB from the Dock so it can connect.'); return; }
         d.authentication = obsAuth(cfg.pw, m.d.authentication.salt, m.d.authentication.challenge);
       }
       ws.send(JSON.stringify({ op: 1, d }));
@@ -210,9 +199,9 @@ function connect() {
   };
   ws.onclose = ev => {
     identified = false; render();
-    if (ev.code === 4009) { setConn('Wrong password', 'bad'); say('The password doesn’t match — check Settings.'); return; }
+    if (ev.code === 4009) { setConn('Wrong password', 'bad'); say('Can’t connect — close this window and open MIB from the Dock again.'); return; }
     setConn('OBS not reachable', 'bad');
-    say('Open OBS and enable Tools → WebSocket Server Settings → “Enable WebSocket server”.');
+    say('Not connected — open MIB from the Dock (it starts everything).');
     scheduleRetry();
   };
 }
@@ -320,10 +309,10 @@ async function selfSetup() {
     if (state.scene !== cfg.live && state.scene !== cfg.away) await call('SetCurrentProgramScene', { sceneName: cfg.live });
 
     state.setupOk = true;
-    if (fixed.length) say('OBS checked ✓ — fixed: ' + fixed.join(', '));
+    if (fixed.length) say('All set ✓');
   } catch (e) {
     state.setupOk = false;
-    say('OBS setup check: ' + e.message);
+    say('Something isn’t set up right — ask Iris.');
   }
 }
 
@@ -385,7 +374,7 @@ function onEvent(type, d) {
       store.set('lastLoop', Date.now());
       // Loop is saved → go straight to Away (short pause so OBS has finished writing the file).
       setTimeout(() => call('SetCurrentProgramScene', { sceneName: cfg.away })
-        .then(() => say('Loop saved ✓ — now Away. Mute Webex (⌘⇧M)'))
+        .then(() => say('Away video saved ✓ — you’re now Away. Mute Webex (⌘⇧M)'))
         .catch(e => say(e.message)), 500);
     }
   }
@@ -399,33 +388,34 @@ function fmt(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + 
 
 function render() {
   const on = identified;
-  $('scene').textContent = on ? (state.scene || '—') : '—';
   const badge = $('badge');
   badge.className = 'badge' + (on && state.scene === cfg.live ? ' live' : on && state.scene === cfg.away ? ' away' : '');
   const awayFor = state.awayStart ? fmt(Date.now() - state.awayStart) : '';
   badge.textContent = on && state.scene === cfg.live ? '● LIVE' : on && state.scene === cfg.away ? '⏸ AWAY · ' + awayFor : '';
-  $('awaySub').textContent = on && state.scene === cfg.away ? `Away for ${awayFor} · Webex muted? ⌘⇧M` : 'Play the loop · then mute Webex ⌘⇧M';
+  $('awaySub').textContent = on && state.scene === cfg.away ? `Away for ${awayFor} · Webex muted? ⌘⇧M` : 'Show the away video · then mute Webex ⌘⇧M';
 
-  // Pre-class check
-  const mark = (id, ok, text) => { const el = $(id); el.className = 'ci' + (ok === true ? ' ok' : ok === false ? ' bad' : ''); if (text) el.textContent = text; };
-  const last = Number(store.get('lastLoop', 0));
-  const today = last && new Date(last).toDateString() === new Date().toDateString();
-  mark('ck-obs', on ? true : false, 'OBS connected');
-  mark('ck-cam', on ? state.vcam : null, 'Virtual camera on');
-  mark('ck-setup', on ? state.setupOk : null, 'Scenes ready');
-  mark('ck-loop', today ? true : false, today ? 'Loop recorded ' + new Date(last).toTimeString().slice(0, 5) : 'No loop yet today');
+  // How old is the away video? Green under an hour, red after.
+  const last = Number(store.get('lastLoop', 0)), el = $('loopage');
+  if (!last) { el.className = 'loopage old'; el.textContent = 'No away video yet'; }
+  else {
+    const mins = Math.floor((Date.now() - last) / 60000);
+    const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : `${Math.floor(mins / 60)} h ${mins % 60} min ago`;
+    el.className = 'loopage ' + (mins < 60 ? 'fresh' : 'old');
+    el.textContent = `Away video recorded ${ago}`;
+  }
   $('recbadge').classList.toggle('on', state.recording);
   $('live').classList.toggle('active', on && state.scene === cfg.live);
   $('away').classList.toggle('active', on && state.scene === cfg.away);
   $('rec').classList.toggle('on', state.recording);
-  $('recLabel').textContent = state.recording ? 'Stop recording · ' + fmt(Date.now() - state.recStart) : 'Record loop';
-  $('recSub').textContent = state.recording ? 'Press to stop and go Away' : 'Sit still for 1–2 minutes';
+  $('recLabel').textContent = state.recording ? 'Stop recording · ' + fmt(Date.now() - state.recStart) : 'Record away video';
+  $('recSub').textContent = state.recording ? 'Press to stop and go Away' : 'Sit still for 1–2 minutes, then press again';
   // Safety rules: only record while Live; never go Away while recording.
   $('rec').disabled = !on || (!state.recording && state.scene !== cfg.live);
   $('away').disabled = !on || state.recording || state.scene === cfg.away;
   $('live').disabled = !on || state.scene === cfg.live;
 }
 setInterval(() => { if (state.recording || state.awayStart) render(); }, 1000);
+setInterval(render, 30000); // keeps the away-video age fresh
 
 $('rec').onclick = async () => {
   try { await call(state.recording ? 'StopRecord' : 'StartRecord'); }
