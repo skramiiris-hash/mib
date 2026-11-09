@@ -31,6 +31,12 @@
     font-weight: 700; color: #fff; background: var(--rec); display: none; }
   .recbadge.on { display: block; animation: blink 1.2s infinite; }
   @keyframes blink { 50% { opacity: .55; } }
+  .check { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; background: var(--card);
+    border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; font-size: 12.5px; color: var(--muted); }
+  .ci { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .ci::before { content: '○'; width: 14px; text-align: center; color: #555; flex: none; }
+  .ci.ok { color: var(--text); } .ci.ok::before { content: '✓'; color: var(--live); font-weight: 700; }
+  .ci.bad::before { content: '!'; color: var(--away); font-weight: 700; }
   .now { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
     display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: var(--muted); }
   .now b { color: var(--text); font-weight: 600; }
@@ -39,6 +45,7 @@
     display: flex; align-items: center; gap: 14px; transition: background .15s, border-color .15s, opacity .15s; }
   button.big:hover:not(:disabled) { background: #22252a; }
   button.big:disabled { opacity: .35; cursor: not-allowed; }
+  button.big.active:disabled { opacity: 1; cursor: default; }
   button.big small { display: block; font-size: 12.5px; font-weight: 400; color: var(--muted); margin-top: 2px; }
   .icon { width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center; }
   #rec .icon { border: 2px solid var(--rec); } #rec .icon i { width: 14px; height: 14px; border-radius: 50%; background: var(--rec); }
@@ -75,6 +82,13 @@
 
   <div class="now"><span>Camera showing</span><b id="scene">—</b></div>
 
+  <div class="check" title="Pre-class check">
+    <div class="ci" id="ck-obs">OBS connected</div>
+    <div class="ci" id="ck-cam">Virtual camera on</div>
+    <div class="ci" id="ck-setup">Scenes ready</div>
+    <div class="ci" id="ck-loop">Loop recorded today</div>
+  </div>
+
   <button class="big" id="rec" disabled>
     <span class="icon"><i></i></span>
     <span><span id="recLabel">Record loop</span><small id="recSub">Sit still for 1–2 minutes</small></span>
@@ -82,7 +96,7 @@
 
   <button class="big" id="away" disabled>
     <span class="icon">⏸</span>
-    <span>Away<small>Play the loop · then mute Webex ⌘⇧M</small></span>
+    <span>Away<small id="awaySub">Play the loop · then mute Webex ⌘⇧M</small></span>
   </button>
 
   <button class="big" id="live" disabled>
@@ -154,6 +168,14 @@ const store = {
   set(k, v) { try { localStorage.setItem('classmode.' + k, v); } catch {} }
 };
 const cfg = {};
+// The MIB launcher on the Mac passes OBS's password in the address (#pw=…&port=…). Save it, then wipe it from the address.
+(function takeHandoff() {
+  if (!location.hash.includes('pw=')) return;
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('pw')) store.set('pw', p.get('pw'));
+  if (p.get('port')) store.set('port', p.get('port'));
+  try { history.replaceState(null, '', location.pathname + location.search); } catch {}
+})();
 function loadCfg() {
   cfg.pw = store.get('pw', ''); cfg.port = store.get('port', '4455');
   cfg.live = store.get('live', 'Live'); cfg.away = store.get('away', 'Away');
@@ -162,7 +184,7 @@ function loadCfg() {
 
 /* ---------- OBS WebSocket v5 client ---------- */
 let ws = null, pending = {}, reqId = 0, identified = false, retry = null;
-const state = { scene: null, recording: false, recStart: 0 };
+const state = { scene: null, recording: false, recStart: 0, vcam: false, setupOk: null, awayStart: null };
 
 function connect() {
   clearTimeout(retry);
@@ -211,9 +233,98 @@ async function init() {
     state.recording = !!r.outputActive; state.recStart = Date.now() - (r.outputDuration || 0);
     const v = await call('GetVirtualCamStatus');
     if (!v.outputActive) await call('StartVirtualCam');
+    state.vcam = true;
+    if (state.scene === cfg.away) state.awayStart = Number(store.get('awayStart', 0)) || Date.now();
   } catch (e) { say(e.message); }
   render();
+  await selfSetup();
+  render();
   startPreview();
+}
+
+/* ---------- self-setup: check and fix OBS every time we connect ---------- */
+async function selfSetup() {
+  const fixed = [];
+  try {
+    const vs = await call('GetVideoSettings');
+    const W = vs.baseWidth, H = vs.baseHeight;
+
+    // Recording: always the same file name, overwritten each time.
+    const getP = (c, n) => call('GetProfileParameter', { parameterCategory: c, parameterName: n }).then(r => r.parameterValue);
+    const setP = (c, n, v) => call('SetProfileParameter', { parameterCategory: c, parameterName: n, parameterValue: v });
+    if (await getP('Output', 'FilenameFormatting') !== 'away_loop') { await setP('Output', 'FilenameFormatting', 'away_loop'); fixed.push('recording name'); }
+    if (await getP('Output', 'OverwriteIfExists') !== 'true') { await setP('Output', 'OverwriteIfExists', 'true'); fixed.push('overwrite'); }
+    const sec = (await getP('Output', 'Mode')) === 'Advanced' ? 'AdvOut' : 'SimpleOutput';
+    const recFmt = (await getP(sec, 'RecFormat2')) || (await getP(sec, 'RecFormat')) || 'mkv';
+    const ext = { fragmented_mp4: 'mp4', hybrid_mp4: 'mp4', fragmented_mov: 'mov', hybrid_mov: 'mov' }[recFmt] || recFmt;
+    const dir = (await call('GetRecordDirectory')).recordDirectory.replace(/\/+$/, '');
+    const loopPath = `${dir}/away_loop.${ext}`;
+
+    const sceneNames = (await call('GetSceneList')).scenes.map(s => s.sceneName);
+    const inputNames = (await call('GetInputList')).inputs.map(i => i.inputName);
+    const items = scene => call('GetSceneItemList', { sceneName: scene }).then(r => r.sceneItems);
+    const ensureInput = async (scene, name, kind, settings) => {
+      if (inputNames.includes(name)) await call('CreateSceneItem', { sceneName: scene, sourceName: name });
+      else { await call('CreateInput', { sceneName: scene, inputName: name, inputKind: kind, inputSettings: settings }); inputNames.push(name); }
+    };
+    const fit = async (scene, id) => {
+      const t = (await call('GetSceneItemTransform', { sceneName: scene, sceneItemId: id })).sceneItemTransform;
+      if (t.boundsType === 'OBS_BOUNDS_SCALE_INNER' && t.boundsWidth === W && t.boundsHeight === H && !t.positionX && !t.positionY) return false;
+      await call('SetSceneItemTransform', { sceneName: scene, sceneItemId: id, sceneItemTransform: {
+        positionX: 0, positionY: 0, rotation: 0, alignment: 5,
+        boundsType: 'OBS_BOUNDS_SCALE_INNER', boundsAlignment: 0, boundsWidth: W, boundsHeight: H } });
+      return true;
+    };
+
+    // Live scene with the webcam, filling the frame.
+    if (!sceneNames.includes(cfg.live)) { await call('CreateScene', { sceneName: cfg.live }); fixed.push('Live scene'); }
+    const isCam = i => /av_?capture/i.test(i.inputKind || '');
+    let cam = (await items(cfg.live)).find(isCam);
+    if (!cam) {
+      const kinds = (await call('GetInputKindList', { unversioned: false })).inputKinds;
+      const kind = kinds.find(k => k === 'macos-avcapture') || kinds.find(k => /av_?capture/i.test(k));
+      if (!kind) throw new Error('No webcam source type found in OBS');
+      await ensureInput(cfg.live, 'MIB Webcam', kind, {});
+      try {
+        const p = await call('GetInputPropertiesListPropertyItems', { inputName: 'MIB Webcam', propertyName: 'device' });
+        const dev = p.propertyItems.find(x => x.itemEnabled !== false && x.itemValue);
+        if (dev) await call('SetInputSettings', { inputName: 'MIB Webcam', inputSettings: { device: dev.itemValue } });
+      } catch {}
+      cam = (await items(cfg.live)).find(isCam);
+      fixed.push('webcam');
+    }
+    if (cam && await fit(cfg.live, cam.sceneItemId)) fixed.push('webcam size');
+
+    // Away scene with the looping recording.
+    if (!sceneNames.includes(cfg.away)) { await call('CreateScene', { sceneName: cfg.away }); fixed.push('Away scene'); }
+    const want = { is_local_file: true, local_file: loopPath, looping: true, close_when_inactive: true, restart_on_activate: true };
+    let media = (await items(cfg.away)).find(i => i.inputKind === 'ffmpeg_source');
+    if (!media) {
+      await ensureInput(cfg.away, 'MIB Loop', 'ffmpeg_source', want);
+      media = (await items(cfg.away)).find(i => i.inputKind === 'ffmpeg_source');
+      fixed.push('loop source');
+    }
+    const cur = (await call('GetInputSettings', { inputName: media.sourceName })).inputSettings;
+    if (Object.entries(want).some(([k, v]) => cur[k] !== v)) {
+      await call('SetInputSettings', { inputName: media.sourceName, inputSettings: want, overlay: true });
+      fixed.push('loop settings');
+    }
+    try {
+      const m = await call('GetInputAudioMonitorType', { inputName: media.sourceName });
+      if (m.monitorType !== 'OBS_MONITORING_TYPE_NONE')
+        await call('SetInputAudioMonitorType', { inputName: media.sourceName, monitorType: 'OBS_MONITORING_TYPE_NONE' });
+    } catch {}
+    if (await fit(cfg.away, media.sceneItemId)) fixed.push('loop size');
+
+    // If OBS is showing some other scene (e.g. a fresh install's "Scene"), start on Live.
+    if (state.scene !== cfg.live && state.scene !== cfg.away) await call('SetCurrentProgramScene', { sceneName: cfg.live });
+
+    state.setupOk = true;
+    if (fixed.length) say('OBS checked ✓ — fixed: ' + fixed.join(', '));
+  } catch (e) {
+    state.setupOk = false;
+    say('OBS setup check: ' + e.message);
+  }
 }
 
 /* ---------- live preview ---------- */
@@ -261,11 +372,17 @@ function startSnapshots() {
 }
 function stopSnapshots() { clearInterval(snapTimer); snapTimer = null; }
 function onEvent(type, d) {
-  if (type === 'CurrentProgramSceneChanged') state.scene = d.sceneName;
+  if (type === 'CurrentProgramSceneChanged') {
+    state.scene = d.sceneName;
+    state.awayStart = d.sceneName === cfg.away ? Date.now() : null;
+    store.set('awayStart', state.awayStart || 0);
+  }
+  if (type === 'VirtualcamStateChanged') state.vcam = !!d.outputActive;
   if (type === 'RecordStateChanged') {
     if (d.outputState === 'OBS_WEBSOCKET_OUTPUT_STARTED') { state.recording = true; state.recStart = Date.now(); }
     if (d.outputState === 'OBS_WEBSOCKET_OUTPUT_STOPPED') {
       state.recording = false;
+      store.set('lastLoop', Date.now());
       // Loop is saved → go straight to Away (short pause so OBS has finished writing the file).
       setTimeout(() => call('SetCurrentProgramScene', { sceneName: cfg.away })
         .then(() => say('Loop saved ✓ — now Away. Mute Webex (⌘⇧M)'))
@@ -285,7 +402,18 @@ function render() {
   $('scene').textContent = on ? (state.scene || '—') : '—';
   const badge = $('badge');
   badge.className = 'badge' + (on && state.scene === cfg.live ? ' live' : on && state.scene === cfg.away ? ' away' : '');
-  badge.textContent = on && state.scene === cfg.live ? '● LIVE' : on && state.scene === cfg.away ? '⏸ AWAY · LOOP' : '';
+  const awayFor = state.awayStart ? fmt(Date.now() - state.awayStart) : '';
+  badge.textContent = on && state.scene === cfg.live ? '● LIVE' : on && state.scene === cfg.away ? '⏸ AWAY · ' + awayFor : '';
+  $('awaySub').textContent = on && state.scene === cfg.away ? `Away for ${awayFor} · Webex muted? ⌘⇧M` : 'Play the loop · then mute Webex ⌘⇧M';
+
+  // Pre-class check
+  const mark = (id, ok, text) => { const el = $(id); el.className = 'ci' + (ok === true ? ' ok' : ok === false ? ' bad' : ''); if (text) el.textContent = text; };
+  const last = Number(store.get('lastLoop', 0));
+  const today = last && new Date(last).toDateString() === new Date().toDateString();
+  mark('ck-obs', on ? true : false, 'OBS connected');
+  mark('ck-cam', on ? state.vcam : null, 'Virtual camera on');
+  mark('ck-setup', on ? state.setupOk : null, 'Scenes ready');
+  mark('ck-loop', today ? true : false, today ? 'Loop recorded ' + new Date(last).toTimeString().slice(0, 5) : 'No loop yet today');
   $('recbadge').classList.toggle('on', state.recording);
   $('live').classList.toggle('active', on && state.scene === cfg.live);
   $('away').classList.toggle('active', on && state.scene === cfg.away);
@@ -297,7 +425,7 @@ function render() {
   $('away').disabled = !on || state.recording || state.scene === cfg.away;
   $('live').disabled = !on || state.scene === cfg.live;
 }
-setInterval(() => { if (state.recording) render(); }, 1000);
+setInterval(() => { if (state.recording || state.awayStart) render(); }, 1000);
 
 $('rec').onclick = async () => {
   try { await call(state.recording ? 'StopRecord' : 'StartRecord'); }
