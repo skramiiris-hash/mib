@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MIB</title>
+<style>
+  :root {
+    --bg: #111214; --card: #1b1d21; --line: #2a2d33; --text: #f2f3f5; --muted: #8b9099;
+    --live: #2fbf71; --away: #f0a830; --rec: #e5484d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+  .wrap { max-width: 360px; margin: 0 auto; padding: 22px 18px; display: flex; flex-direction: column; gap: 14px; }
+  header { display: flex; align-items: center; justify-content: space-between; }
+  h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: .2px; }
+  .status { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+  .dot.ok { background: var(--live); } .dot.bad { background: var(--rec); }
+  .preview { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 14px; overflow: hidden;
+    border: 1px solid var(--line); }
+  .preview video, .preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: none; }
+  .preview .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted);
+    font-size: 13px; text-align: center; padding: 16px; }
+  .badge { position: absolute; top: 10px; left: 10px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px;
+    font-weight: 700; letter-spacing: .6px; background: rgba(0,0,0,.6); display: none; align-items: center; gap: 6px; }
+  .badge.live { color: var(--live); display: flex; } .badge.away { color: var(--away); display: flex; }
+  .recbadge { position: absolute; top: 10px; right: 10px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px;
+    font-weight: 700; color: #fff; background: var(--rec); display: none; }
+  .recbadge.on { display: block; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .55; } }
+  .now { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    display: flex; justify-content: space-between; align-items: center; font-size: 14px; color: var(--muted); }
+  .now b { color: var(--text); font-weight: 600; }
+  button.big { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+    border-radius: 14px; padding: 18px 16px; font-size: 18px; font-weight: 600; text-align: left; cursor: pointer;
+    display: flex; align-items: center; gap: 14px; transition: background .15s, border-color .15s, opacity .15s; }
+  button.big:hover:not(:disabled) { background: #22252a; }
+  button.big:disabled { opacity: .35; cursor: not-allowed; }
+  button.big small { display: block; font-size: 12.5px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  .icon { width: 34px; height: 34px; border-radius: 50%; flex: none; display: grid; place-items: center; }
+  #rec .icon { border: 2px solid var(--rec); } #rec .icon i { width: 14px; height: 14px; border-radius: 50%; background: var(--rec); }
+  #rec.on { border-color: var(--rec); background: #2a1719; } #rec.on .icon i { border-radius: 3px; }
+  #away .icon { background: rgba(240,168,48,.15); color: var(--away); }
+  #live .icon { background: rgba(47,191,113,.15); color: var(--live); }
+  #away.active { border-color: var(--away); background: #2a2214; }
+  #live.active { border-color: var(--live); background: #142a1e; }
+  .msg { min-height: 20px; font-size: 13px; color: var(--away); text-align: center; }
+  .hint { font-size: 12.5px; color: var(--muted); text-align: center; }
+  details { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+  summary { cursor: pointer; }
+  label { display: block; margin-top: 10px; }
+  input { width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--card); color: var(--text); font-size: 14px; }
+  .save { margin-top: 10px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: #262a30; color: var(--text); cursor: pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>MIB</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="conn">Connecting…</span></div>
+  </header>
+
+  <div class="preview" title="What Webex sees">
+    <video id="pv" autoplay muted playsinline></video>
+    <img id="pi" alt="">
+    <div class="empty" id="pe">Preview starts once connected to OBS</div>
+    <span class="badge" id="badge"></span>
+    <span class="recbadge" id="recbadge">● REC</span>
+  </div>
+
+  <div class="now"><span>Camera showing</span><b id="scene">—</b></div>
+
+  <button class="big" id="rec" disabled>
+    <span class="icon"><i></i></span>
+    <span><span id="recLabel">Record loop</span><small id="recSub">Sit still for 1–2 minutes</small></span>
+  </button>
+
+  <button class="big" id="away" disabled>
+    <span class="icon">⏸</span>
+    <span>Away<small>Play the loop · then mute Webex ⌘⇧M</small></span>
+  </button>
+
+  <button class="big" id="live" disabled>
+    <span class="icon">●</span>
+    <span>Live<small>Back on camera · then unmute ⌘⇧M</small></span>
+  </button>
+
+  <div class="msg" id="msg"></div>
+  <div class="hint">Keep OBS open in the background. Webex camera = “OBS Virtual Camera”.</div>
+
+  <details>
+    <summary>Settings</summary>
+    <label>OBS WebSocket password
+      <input id="pw" type="password" placeholder="From OBS → Tools → WebSocket Server Settings"></label>
+    <label>Port <input id="port" value="4455"></label>
+    <label>Live scene name <input id="liveName" value="Live"></label>
+    <label>Away scene name <input id="awayName" value="Away"></label>
+    <button class="save" id="save">Save &amp; reconnect</button>
+  </details>
+</div>
+
+<script>
+/* ---------- tiny SHA-256 (no internet or secure context needed) ---------- */
+const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+function sha256(msg) { // Uint8Array -> Uint8Array(32)
+  const l = msg.length, nb = ((l + 9 + 63) >> 6) << 6, b = new Uint8Array(nb);
+  b.set(msg); b[l] = 0x80;
+  const bits = l * 8; const dv = new DataView(b.buffer);
+  dv.setUint32(nb - 4, bits >>> 0); dv.setUint32(nb - 8, Math.floor(bits / 0x100000000));
+  let h = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const w = new Uint32Array(64), r = (x, n) => (x >>> n) | (x << (32 - n));
+  for (let o = 0; o < nb; o += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(o + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = r(w[i-15],7) ^ r(w[i-15],18) ^ (w[i-15] >>> 3);
+      const s1 = r(w[i-2],17) ^ r(w[i-2],19) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let [a,bb,c,d,e,f,g,hh] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (hh + (r(e,6) ^ r(e,11) ^ r(e,25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;
+      const t2 = ((r(a,2) ^ r(a,13) ^ r(a,22)) + ((a & bb) ^ (a & c) ^ (bb & c))) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = bb; bb = a; a = (t1 + t2) | 0;
+    }
+    h = [h[0]+a, h[1]+bb, h[2]+c, h[3]+d, h[4]+e, h[5]+f, h[6]+g, h[7]+hh].map(x => x | 0);
+  }
+  const out = new Uint8Array(32), odv = new DataView(out.buffer);
+  h.forEach((x, i) => odv.setUint32(i * 4, x >>> 0));
+  return out;
+}
+const enc = s => new TextEncoder().encode(s);
+const b64 = u => btoa(String.fromCharCode(...u));
+function obsAuth(password, salt, challenge) {
+  const secret = b64(sha256(enc(password + salt)));
+  return b64(sha256(enc(secret + challenge)));
+}
+
+/* ---------- settings ---------- */
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('classmode.' + k); return v === null ? d : v; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('classmode.' + k, v); } catch {} }
+};
+const cfg = {};
+function loadCfg() {
+  cfg.pw = store.get('pw', ''); cfg.port = store.get('port', '4455');
+  cfg.live = store.get('live', 'Live'); cfg.away = store.get('away', 'Away');
+  $('pw').value = cfg.pw; $('port').value = cfg.port; $('liveName').value = cfg.live; $('awayName').value = cfg.away;
+}
+
+/* ---------- OBS WebSocket v5 client ---------- */
+let ws = null, pending = {}, reqId = 0, identified = false, retry = null;
+const state = { scene: null, recording: false, recStart: 0 };
+
+function connect() {
+  clearTimeout(retry);
+  if (ws) { try { ws.onclose = null; ws.close(); } catch {} }
+  identified = false; setConn('Connecting…', '');
+  try { ws = new WebSocket(`ws://127.0.0.1:${cfg.port}`); }
+  catch { return scheduleRetry(); }
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.op === 0) { // Hello
+      const d = { rpcVersion: 1, eventSubscriptions: 4 | 64 }; // Scenes + Outputs
+      if (m.d.authentication) {
+        if (!cfg.pw) { setConn('Needs password', 'bad'); say('Open Settings below and paste the OBS WebSocket password.'); return; }
+        d.authentication = obsAuth(cfg.pw, m.d.authentication.salt, m.d.authentication.challenge);
+      }
+      ws.send(JSON.stringify({ op: 1, d }));
+    } else if (m.op === 2) { identified = true; setConn('Connected to OBS', 'ok'); say(''); init(); }
+    else if (m.op === 5) onEvent(m.d.eventType, m.d.eventData || {});
+    else if (m.op === 7) {
+      const p = pending[m.d.requestId]; if (!p) return; delete pending[m.d.requestId];
+      m.d.requestStatus.result ? p.res(m.d.responseData || {}) : p.rej(new Error(m.d.requestStatus.comment || 'OBS error'));
+    }
+  };
+  ws.onclose = ev => {
+    identified = false; render();
+    if (ev.code === 4009) { setConn('Wrong password', 'bad'); say('The password doesn’t match — check Settings.'); return; }
+    setConn('OBS not reachable', 'bad');
+    say('Open OBS and enable Tools → WebSocket Server Settings → “Enable WebSocket server”.');
+    scheduleRetry();
+  };
+}
+function scheduleRetry() { retry = setTimeout(connect, 3000); }
+function call(requestType, requestData) {
+  return new Promise((res, rej) => {
+    if (!ws || !identified) return rej(new Error('Not connected to OBS'));
+    const requestId = 'r' + (++reqId); pending[requestId] = { res, rej };
+    ws.send(JSON.stringify({ op: 6, d: { requestType, requestId, requestData } }));
+  });
+}
+
+async function init() {
+  try {
+    const s = await call('GetCurrentProgramScene');
+    state.scene = s.sceneName || s.currentProgramSceneName;
+    const r = await call('GetRecordStatus');
+    state.recording = !!r.outputActive; state.recStart = Date.now() - (r.outputDuration || 0);
+    const v = await call('GetVirtualCamStatus');
+    if (!v.outputActive) await call('StartVirtualCam');
+  } catch (e) { say(e.message); }
+  render();
+  startPreview();
+}
+
+/* ---------- live preview ---------- */
+// Preferred: open the "OBS Virtual Camera" device directly = exactly what Webex sees, smooth video.
+// Fallback: ask OBS for a snapshot of the current scene a few times a second.
+let previewMode = null, snapTimer = null;
+async function startPreview() {
+  if (previewMode === 'camera') return;
+  try {
+    const md = navigator.mediaDevices;
+    if (!md || !md.getUserMedia) throw new Error('no camera API');
+    let devs = await md.enumerateDevices();
+    if (!devs.some(d => d.kind === 'videoinput' && d.label)) {
+      const tmp = await md.getUserMedia({ video: true }); // ask permission once so device names appear
+      tmp.getTracks().forEach(t => t.stop());
+      devs = await md.enumerateDevices();
+    }
+    const obsCam = devs.find(d => d.kind === 'videoinput' && /obs/i.test(d.label));
+    if (!obsCam) throw new Error('OBS Virtual Camera not found');
+    const stream = await md.getUserMedia({ video: { deviceId: { exact: obsCam.deviceId }, width: 1280, height: 720 } });
+    const pv = $('pv'); pv.srcObject = stream; pv.style.display = 'block';
+    const fit = () => { if (pv.videoWidth) $('pv').parentElement.style.aspectRatio = pv.videoWidth + ' / ' + pv.videoHeight; };
+    pv.onloadedmetadata = fit; pv.onresize = fit;
+    $('pi').style.display = 'none'; $('pe').style.display = 'none';
+    stopSnapshots(); previewMode = 'camera';
+    stream.getVideoTracks()[0].addEventListener('ended', () => { previewMode = null; pv.style.display = 'none'; startSnapshots(); });
+  } catch (e) {
+    startSnapshots();
+  }
+}
+function startSnapshots() {
+  if (previewMode === 'snap') return;
+  previewMode = 'snap'; stopSnapshots();
+  let busy = false;
+  snapTimer = setInterval(async () => {
+    if (!identified || !state.scene || busy) return;
+    busy = true;
+    try {
+      const r = await call('GetSourceScreenshot', { sourceName: state.scene, imageFormat: 'jpg',
+        imageCompressionQuality: 70 });
+      const pi = $('pi'); pi.src = r.imageData; pi.style.display = 'block'; $('pe').style.display = 'none';
+      pi.onload = () => { if (pi.naturalWidth) pi.parentElement.style.aspectRatio = pi.naturalWidth + ' / ' + pi.naturalHeight; };
+    } catch {} finally { busy = false; }
+  }, 250);
+}
+function stopSnapshots() { clearInterval(snapTimer); snapTimer = null; }
+function onEvent(type, d) {
+  if (type === 'CurrentProgramSceneChanged') state.scene = d.sceneName;
+  if (type === 'RecordStateChanged') {
+    if (d.outputState === 'OBS_WEBSOCKET_OUTPUT_STARTED') { state.recording = true; state.recStart = Date.now(); }
+    if (d.outputState === 'OBS_WEBSOCKET_OUTPUT_STOPPED') {
+      state.recording = false;
+      // Loop is saved → go straight to Away (short pause so OBS has finished writing the file).
+      setTimeout(() => call('SetCurrentProgramScene', { sceneName: cfg.away })
+        .then(() => say('Loop saved ✓ — now Away. Mute Webex (⌘⇧M)'))
+        .catch(e => say(e.message)), 500);
+    }
+  }
+  render();
+}
+
+/* ---------- UI ---------- */
+function setConn(text, cls) { $('conn').textContent = text; $('dot').className = 'dot ' + cls; }
+function say(t) { $('msg').textContent = t; }
+function fmt(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+function render() {
+  const on = identified;
+  $('scene').textContent = on ? (state.scene || '—') : '—';
+  const badge = $('badge');
+  badge.className = 'badge' + (on && state.scene === cfg.live ? ' live' : on && state.scene === cfg.away ? ' away' : '');
+  badge.textContent = on && state.scene === cfg.live ? '● LIVE' : on && state.scene === cfg.away ? '⏸ AWAY · LOOP' : '';
+  $('recbadge').classList.toggle('on', state.recording);
+  $('live').classList.toggle('active', on && state.scene === cfg.live);
+  $('away').classList.toggle('active', on && state.scene === cfg.away);
+  $('rec').classList.toggle('on', state.recording);
+  $('recLabel').textContent = state.recording ? 'Stop recording · ' + fmt(Date.now() - state.recStart) : 'Record loop';
+  $('recSub').textContent = state.recording ? 'Press to stop and go Away' : 'Sit still for 1–2 minutes';
+  // Safety rules: only record while Live; never go Away while recording.
+  $('rec').disabled = !on || (!state.recording && state.scene !== cfg.live);
+  $('away').disabled = !on || state.recording || state.scene === cfg.away;
+  $('live').disabled = !on || state.scene === cfg.live;
+}
+setInterval(() => { if (state.recording) render(); }, 1000);
+
+$('rec').onclick = async () => {
+  try { await call(state.recording ? 'StopRecord' : 'StartRecord'); }
+  catch (e) { say(e.message); }
+};
+$('away').onclick = () => call('SetCurrentProgramScene', { sceneName: cfg.away })
+  .then(() => say('Away — remember to mute Webex (⌘⇧M)')).catch(e => say(e.message));
+$('live').onclick = () => call('SetCurrentProgramScene', { sceneName: cfg.live })
+  .then(() => say('Live — unmute Webex when ready (⌘⇧M)')).catch(e => say(e.message));
+$('save').onclick = () => {
+  store.set('pw', $('pw').value); store.set('port', $('port').value.trim() || '4455');
+  store.set('live', $('liveName').value.trim() || 'Live'); store.set('away', $('awayName').value.trim() || 'Away');
+  loadCfg(); connect();
+};
+
+loadCfg(); render(); connect();
+</script>
+</body>
+</html>
